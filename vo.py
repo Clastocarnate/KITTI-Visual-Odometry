@@ -119,35 +119,6 @@ def get_pose(keypoints1, keypoints2, matches, K):
     
     return R, t, confidence
 
-# Calculate scale correction factor
-def calculate_scale_correction(vo_trajectory, gt_poses, window_size=10):
-    """Calculate scale correction using recent trajectory segments"""
-    if len(vo_trajectory) < 2 or len(gt_poses) < len(vo_trajectory):
-        return 1.0
-    
-    # Use recent trajectory segment for scale estimation
-    start_idx = max(0, len(vo_trajectory) - window_size)
-    
-    # Calculate VO displacement
-    vo_start = np.array(vo_trajectory[start_idx])
-    vo_end = np.array(vo_trajectory[-1])
-    vo_displacement = np.linalg.norm(vo_end - vo_start)
-    
-    # Calculate GT displacement
-    gt_start = gt_poses[start_idx][:3, 3]
-    gt_end = gt_poses[len(vo_trajectory)-1][:3, 3]
-    gt_displacement = np.linalg.norm(gt_end - gt_start)
-    
-    if vo_displacement < 0.1:  # Avoid division by very small numbers
-        return 1.0
-    
-    scale = gt_displacement / vo_displacement
-    
-    # Limit scale changes to reasonable range
-    scale = np.clip(scale, 0.1, 10.0)
-    
-    return scale
-
 # Main visualization function
 def visualize_odometry():
     # Load image files and ground truth poses
@@ -165,11 +136,6 @@ def visualize_odometry():
     global_R = np.eye(3)
     global_t = np.zeros((3,1))
     trajectory = [global_t.flatten()]  # List of 3D translation vectors
-    trajectory_scaled = [global_t.flatten()]  # Scale-corrected trajectory
-    
-    # Scale correction parameters
-    scale_factor = 1.0
-    scale_update_interval = 5  # Update scale every N frames
 
     # Extract x, z coordinates from ground truth poses
     gt_translations = np.array([pose[:3, 3] for pose in ground_truth_poses])
@@ -185,7 +151,6 @@ def visualize_odometry():
     
     # Initialize plots
     vo_line, = ax.plot([], [], 'b-', label='Visual Odometry')
-    vo_scaled_line, = ax.plot([], [], 'c-', label='Scale-Corrected VO')
     vo_point, = ax.plot([], [], 'ro', label='VO Current Position')
     gt_line, = ax.plot([], [], 'g-', label='Ground Truth')
     gt_point, = ax.plot([], [], 'mo', label='GT Current Position')
@@ -221,31 +186,18 @@ def visualize_odometry():
                 global_t = global_t + global_R @ t
                 global_R = global_R @ R
                 trajectory.append(global_t.flatten())
-                
-                # Update scale factor periodically
-                if i % scale_update_interval == 0:
-                    scale_factor = calculate_scale_correction(trajectory, ground_truth_poses)
-                    print(f"Frame {i}: Scale factor updated to {scale_factor:.3f}")
-                
-                # Apply scale correction
-                scaled_position = trajectory[-1] * scale_factor
-                trajectory_scaled.append(scaled_position)
             else:
                 print(f"Frame {i}: Low confidence ({confidence:.3f}), skipping pose update")
                 # Keep previous position
                 trajectory.append(trajectory[-1])
-                trajectory_scaled.append(trajectory_scaled[-1])
 
         # Update trajectory plots
         traj_array = np.array(trajectory)
-        traj_scaled_array = np.array(trajectory_scaled)
         
         # Original and scaled VO trajectories
         vo_x, vo_z = traj_array[:, 0], traj_array[:, 2]
-        vo_x_scaled, vo_z_scaled = traj_scaled_array[:, 0], traj_scaled_array[:, 2]
         vo_line.set_data(vo_x, vo_z)
-        vo_scaled_line.set_data(vo_x_scaled, vo_z_scaled)
-        vo_point.set_data([vo_x_scaled[-1]], [vo_z_scaled[-1]])
+        vo_point.set_data([vo_x[-1]], [vo_z[-1]])
 
         # Ground truth trajectory
         gt_x_curr, gt_z_curr = gt_x[:i+1], gt_z[:i+1]
@@ -253,8 +205,8 @@ def visualize_odometry():
         gt_point.set_data([gt_x_curr[-1]], [gt_z_curr[-1]])
 
         # Update axis limits with padding
-        x_all = np.concatenate([vo_x, vo_x_scaled, gt_x[:i+1]])
-        z_all = np.concatenate([vo_z, vo_z_scaled, gt_z[:i+1]])
+        x_all = np.concatenate([vo_x, gt_x[:i+1]])
+        z_all = np.concatenate([vo_z, gt_z[:i+1]])
         x_range = max(x_all) - min(x_all)
         z_range = max(z_all) - min(z_all)
         padding_x = 0.1 * x_range if x_range > 0 else 1.0
@@ -267,7 +219,7 @@ def visualize_odometry():
         fig.canvas.flush_events()
 
         # Display current image with frame info
-        info_text = f"Frame: {i}/{n_frames-1}, Scale: {scale_factor:.3f}"
+        info_text = f"Frame: {i}/{n_frames-1}"
         cv2.putText(curr_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         cv2.imshow('KITTI Sequence', curr_frame)
 
@@ -281,18 +233,14 @@ def visualize_odometry():
         prev_frame = curr_frame.copy()
 
     # Final statistics
-    if len(trajectory) > 1 and len(trajectory_scaled) > 1:
+    if len(trajectory) > 1:
         final_vo_pos = np.array(trajectory[-1])
-        final_scaled_pos = np.array(trajectory_scaled[-1])
         final_gt_pos = ground_truth_poses[len(trajectory)-1][:3, 3]
         
         original_error = np.linalg.norm(final_vo_pos - final_gt_pos)
-        scaled_error = np.linalg.norm(final_scaled_pos - final_gt_pos)
         
         print(f"\nFinal Results:")
         print(f"Original VO error: {original_error:.3f} meters")
-        print(f"Scale-corrected VO error: {scaled_error:.3f} meters")
-        print(f"Improvement: {((original_error - scaled_error) / original_error * 100):.1f}%")
 
     # Keep plot open
     plt.ioff()
